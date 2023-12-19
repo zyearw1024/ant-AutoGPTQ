@@ -19,10 +19,13 @@ def get_device(obj: Union[torch.Tensor, nn.Module]):
     return next(obj.parameters()).device
 
 
-def move_to_device(obj: Union[torch.Tensor, nn.Module], device: torch.device):
-    if get_device(obj) != device:
-        obj = obj.to(device)
-    return obj
+def move_to_device(obj: Optional[Union[torch.Tensor, nn.Module]], device: torch.device):
+    if obj is None:
+        return obj
+    else:
+        if get_device(obj) != device:
+            obj = obj.to(device)
+        return obj
 
 
 def find_layers(module, layers=None, name=''):
@@ -309,7 +312,10 @@ def autogptq_post_init(model, use_act_order: bool, max_input_length: Optional[in
 
     if model_uses_exllama:
         # To be honest this is quite ugly, not proud of this.
-        from exllama_kernels import prepare_buffers, set_tuning_params
+        try:
+            from exllama_kernels import prepare_buffers, set_tuning_params
+        except ImportError as e:
+            raise ImportError(f"Could not import exllama backend dependencies prepare_buffers, set_tuning_params with the following error: {e}")
         
         device_to_buffers = {}
 

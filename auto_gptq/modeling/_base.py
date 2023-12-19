@@ -158,14 +158,6 @@ class BaseGPTQForCausalLM(nn.Module, PushToHubMixin):
     def hf_device_map(self):
         return getattr(self.model, "hf_device_map", None)
 
-    @staticmethod
-    def _resize_attention_mask(attention_mask: List[torch.LongTensor]):
-        return attention_mask
-
-    @staticmethod
-    def _resize_position_ids(position_ids: List[torch.LongTensor]):
-        return position_ids
-
     def _prepare_examples_for_quantization(
         self,
         examples: List[Dict[str, Union[List[int], torch.LongTensor]]],
@@ -258,7 +250,12 @@ class BaseGPTQForCausalLM(nn.Module, PushToHubMixin):
                             inp = kwargs[kwarg_name]
                             break
                 layer_inputs.append(move_to_device(inp, self.data_device))
-                attention_masks.append(kwargs["attention_mask"].to(self.data_device))
+                
+                if kwargs["attention_mask"] is not None:
+                    attention_masks.append(kwargs["attention_mask"].to(self.data_device))
+                else:
+                    attention_masks.append(None)
+                
                 pos_ids = kwargs.get("position_ids", None)
                 if pos_ids is not None:
                     position_ids.append(move_to_device(pos_ids, self.data_device))
@@ -316,10 +313,6 @@ class BaseGPTQForCausalLM(nn.Module, PushToHubMixin):
 
         torch.cuda.empty_cache()
 
-        # resize attention mask and position ids for some special models
-        attention_masks = self._resize_attention_mask(attention_masks)
-        position_ids = self._resize_position_ids(position_ids)
-
         inside_layer_modules = self.inside_layer_modules
         if not self.quantize_config.true_sequential:
             inside_layer_modules = [sum(inside_layer_modules, [])]
@@ -335,7 +328,7 @@ class BaseGPTQForCausalLM(nn.Module, PushToHubMixin):
 
             full = find_layers(layer)
             for names in inside_layer_modules:
-                subset = {n: full[n] for n in names}
+                subset = {n: full[n] for n in names if n in full}
                 gptq = {}
                 for name in subset:
                     gptq[name] = GPTQ(subset[name])
@@ -837,11 +830,15 @@ class BaseGPTQForCausalLM(nn.Module, PushToHubMixin):
                         true_model_basename = possible_model_basename
                         break
         else:  # remote
+            temp = None
             for ext in extensions:
                 for possible_model_basename in possible_model_basenames:
                     resolved_archive_file = cached_file(model_name_or_path, possible_model_basename + ext, **cached_file_kwargs)
+                    if resolved_archive_file is None:
+                        resolved_archive_file = temp
                     searched_files.append(possible_model_basename + ext)
                     if resolved_archive_file is not None:
+                        temp = resolved_archive_file
                         true_model_basename = possible_model_basename
                         break
         
@@ -895,7 +892,7 @@ class BaseGPTQForCausalLM(nn.Module, PushToHubMixin):
                 layers = find_layers(model)
                 ignore_layers = [cls.lm_head_name] + cls.outside_layer_modules
                 for name in list(layers.keys()):
-                    if any([name.startswith(ignore_layer) for ignore_layer in ignore_layers]):
+                    if any([name.startswith(ignore_layer) for ignore_layer in ignore_layers]) or all([not name.endswith(ignore_layer) for sublist in cls.inside_layer_modules for ignore_layer in sublist]):
                         logger.info(f"{name} not been quantized, will be ignored when make_quant.")
                         del layers[name]
 
@@ -945,8 +942,8 @@ class BaseGPTQForCausalLM(nn.Module, PushToHubMixin):
             if low_cpu_mem_usage:
                 make_sure_no_tensor_in_meta_device(model, use_triton, quantize_config.desc_act, quantize_config.group_size, bits=quantize_config.bits)
 
-            # Patch until 0.25.0 is released and includes this fix: https://github.com/huggingface/accelerate/pull/2116
-            if version.parse(accelerate.__version__) < version.parse("0.24.99") or accelerate.__version__ == "0.25.0.dev0":
+            # Patch until 0.26.0 is released and includes this fix: https://github.com/huggingface/accelerate/pull/2116
+            if version.parse(accelerate.__version__) < version.parse("0.25.99"):
                 original_set_module_tensor_to_device = accelerate.utils.modeling.set_module_tensor_to_device
                 accelerate.utils.modeling.set_module_tensor_to_device = set_module_tensor_to_device_patched
 
